@@ -1,0 +1,7 @@
+__pycache__/
+*.py[cod]
+.venv/
+ETL/.env
+*.local.sqlite3
+*.local.sqlite3-*
+Review Outputs/
