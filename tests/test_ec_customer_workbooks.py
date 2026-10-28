@@ -15,6 +15,12 @@ def example():
                               'candidate_tier': tier, 'item': str(line_key), 'item_dsc': '=DO_NOT_EXECUTE()',
                               'current_tier': 3,
                               'requested_price': '10.2500', 'requested_uom': 'EA', 'sell_uom': 'EA',
+                              'penny_contract_flag': 'N', 'penny_product_types': None,
+                              'penny_man_contract_ids': None, 'penny_mck_contract_ids': None,
+                              'penny_contract_ambiguous': False, 'penny_customer_status': 'NOT_PENNY_ITEM',
+                              'penny_price_test_status': 'NOT_PENNY_ITEM',
+                              'penny_contract_required_flag': 'N', 'normalized_requested_price': None,
+                              'penny_tier_10_cost': None,
                               'tier_cost': '7.00', 'requested_margin_at_candidate_cost': '0.317073',
                               'validation_errors': [], 'impact_exceptions': ['NO_IPC_ACTIVITY'],
                               'grouped_lvl2': 'GAUZE'})
@@ -48,6 +54,25 @@ def example():
                 'source_item_description': 'Unpriced extra item', 'requested_uom': 'EA',
                 'requested_price': '', 'price_exclusion_reason': 'MISSING_REQUESTED_PRICE',
                 'source_errors': ['INVALID_REQUESTED_PRICE']}],
+            'excluded_penny_contract_lines': [{'request_id': 'REQ-1', 'account_provided': '20046631',
+                'prca_num': '100', 'item': '98', 'source_item_description': 'Penny line',
+                'requested_price': '1.00', 'requested_uom': 'EA', 'normalized_requested_price': '1.00',
+                'sell_uom': 'EA', 'penny_tier_10_cost': '2.00', 'penny_product_types': 'DISPENSER',
+                'penny_man_contract_ids': 'MCKB DISPENSERS', 'penny_mck_contract_ids': '87918',
+                'penny_contract_match_count': 1, 'penny_contract_ambiguous': False,
+                'penny_customer_status': 'Y', 'penny_contract_exclusion_reason': 'PENNY_ITEM_CANNOT_ACHIEVE_POSITIVE_TIER_10_MARGIN'}],
+            'excluded_penny_contract_activity': [{'prca_num': '100', 'item_e1_num': '88',
+                'item_dsc': 'On-contract activity', 'grouped_lvl2': 'GAUZE', 'ipc_sell_uom': 'EA',
+                'qty_3_mth': 10, 'sls_3_mth': 15, 'penny_contract_flag': 'Y',
+                'penny_product_types': 'DISPENSER', 'penny_man_contract_ids': 'MCKB DISPENSERS',
+                'penny_mck_contract_ids': '87918', 'penny_contract_ambiguous': False,
+                'penny_customer_status': 'Y'}],
+            'uncertain_penny_contract_activity': [{'prca_num': '100', 'item_e1_num': '89',
+                'item_dsc': 'Uncertain activity', 'grouped_lvl2': 'GAUZE', 'ipc_sell_uom': 'EA',
+                'qty_3_mth': 5, 'sls_3_mth': 8, 'penny_contract_flag': 'Y',
+                'penny_product_types': 'DISPENSER', 'penny_man_contract_ids': 'MCKB DISPENSERS',
+                'penny_mck_contract_ids': '87918', 'penny_contract_ambiguous': True,
+                'penny_customer_status': 'UNKNOWN_AMBIGUOUS_CUSTOMER_ELIGIBILITY'}],
             'analyst_tier_assumption': 'Current attached EC tier is assumed to be analyst assignment'}
 
 
@@ -59,6 +84,9 @@ class CustomerWorkbookTests(unittest.TestCase):
             self.assertEqual(manifest['customers'], 2)
             self.assertEqual(manifest['requested_lines'], 3)
             self.assertEqual(manifest['tier_scenarios'], 30)
+            self.assertEqual(manifest['excluded_penny_contract_lines'], 1)
+            self.assertEqual(manifest['excluded_penny_contract_activity'], 1)
+            self.assertEqual(manifest['uncertain_penny_contract_activity'], 1)
             with (folder / 'Customer_100_Review.xlsx').open('rb') as source:
                 workbook = load_workbook(source)
                 try:
@@ -72,6 +100,16 @@ class CustomerWorkbookTests(unittest.TestCase):
                     self.assertEqual(excluded.cell(4, 3).value, '100')
                     self.assertEqual(excluded.cell(4, 4).value, '99')
                     self.assertEqual(excluded.cell(4, 8).value, 'MISSING_REQUESTED_PRICE')
+                    penny_excluded = workbook['Penny Contract Exclusions']
+                    self.assertEqual(penny_excluded.cell(4, 4).value, '98')
+                    self.assertEqual(penny_excluded.cell(4, 19).value,
+                        'PENNY_ITEM_CANNOT_ACHIEVE_POSITIVE_TIER_10_MARGIN')
+                    penny_sheet = workbook['Penny Contract']
+                    self.assertEqual(penny_sheet.cell(4, 1).value, 'Requested Line')
+                    self.assertEqual(penny_sheet.cell(5, 1).value, 'On-contract Activity Excluded')
+                    self.assertEqual(penny_sheet.cell(5, 8).value, 'On-contract activity')
+                    self.assertEqual(penny_sheet.cell(6, 1).value, 'Customer Status Uncertain')
+                    self.assertEqual(penny_sheet.cell(6, 8).value, 'Uncertain activity')
                     summary_rows = list(workbook['Customer Summary'].iter_rows(
                         min_row=4, values_only=True))
                     self.assertIn(('Unpriced lines excluded from tier analysis', 1), summary_rows)
@@ -111,8 +149,9 @@ class CustomerWorkbookTests(unittest.TestCase):
             with (folder / 'Customer_Index.xlsx').open('rb') as source:
                 index = load_workbook(source)
                 try:
-                    self.assertEqual(index['Customers'].cell(4, 7).hyperlink.target,
+                    self.assertEqual(index['Customers'].cell(4, 10).hyperlink.target,
                                      'Customer_100_Review.xlsx')
+                    self.assertEqual(index['Customers'].cell(4, 5).value, 1)
                 finally:
                     index.close()
             with self.assertRaises(ValueError):
@@ -122,6 +161,9 @@ class CustomerWorkbookTests(unittest.TestCase):
         report = example()
         report['lines'] = []
         report['scenarios'] = []
+        report['excluded_penny_contract_lines'] = []
+        report['excluded_penny_contract_activity'] = []
+        report['uncertain_penny_contract_activity'] = []
         report['excluded_unpriced_lines'] = [{
             'request_id': 'REQ-ONLY-UNPRICED', 'prca_num': '300', 'item': '77',
             'requested_price': '0', 'price_exclusion_reason': 'ZERO_REQUESTED_PRICE',
@@ -139,6 +181,38 @@ class CustomerWorkbookTests(unittest.TestCase):
                     self.assertEqual(workbook['Requested Items'].max_row, 3)
                     self.assertEqual(workbook['Excluded Unpriced Lines'].cell(4, 1).value,
                                      'REQ-ONLY-UNPRICED')
+                finally:
+                    workbook.close()
+
+    def test_customer_with_only_penny_exclusions_gets_audit_workbook(self):
+        report = example()
+        report['lines'] = []
+        report['scenarios'] = []
+        report['excluded_unpriced_lines'] = []
+        report['excluded_penny_contract_activity'] = []
+        report['uncertain_penny_contract_activity'] = []
+        report['excluded_penny_contract_lines'] = [{
+            'request_id': 'REQ-PENNY', 'account_provided': '400', 'prca_num': '400',
+            'item': '519596', 'requested_price': '1.00', 'requested_uom': 'EA',
+            'normalized_requested_price': '1.00', 'sell_uom': 'EA',
+            'penny_tier_10_cost': '2.00', 'penny_product_types': 'GLOVE BOX HOLDER',
+            'penny_man_contract_ids': 'MP3597', 'penny_mck_contract_ids': '16685',
+            'penny_contract_match_count': 1, 'penny_contract_ambiguous': False,
+            'penny_customer_status': 'Y', 'penny_contract_exclusion_reason': 'PENNY_ITEM_CANNOT_ACHIEVE_POSITIVE_TIER_10_MARGIN',
+        }]
+        with tempfile.TemporaryDirectory() as temporary:
+            folder = Path(temporary) / 'customers'
+            manifest = export_customers(report, folder)
+            self.assertEqual(manifest['customers'], 1)
+            self.assertEqual(manifest['excluded_penny_contract_lines'], 1)
+            with (folder / 'Customer_400_Review.xlsx').open('rb') as source:
+                workbook = load_workbook(source)
+                try:
+                    sheet = workbook['Penny Contract Exclusions']
+                    self.assertEqual(sheet.cell(4, 1).value, 'REQ-PENNY')
+                    self.assertEqual(sheet.cell(4, 4).value, '519596')
+                    self.assertEqual(sheet.cell(4, 19).value,
+                                     'PENNY_ITEM_CANNOT_ACHIEVE_POSITIVE_TIER_10_MARGIN')
                 finally:
                     workbook.close()
 

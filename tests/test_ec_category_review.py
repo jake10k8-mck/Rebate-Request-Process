@@ -4,6 +4,7 @@ from pathlib import Path
 import re
 
 from ec_category_review import (TIER_TARGET_MARGINS, category_scenarios,
+                                partition_penny_contract_activity,
                                 requested_item_tier_scenarios, tier_benchmark_price)
 
 
@@ -24,6 +25,42 @@ def fixture():
 
 
 class CategoryReviewTests(unittest.TestCase):
+    def test_on_contract_penny_activity_is_excluded_and_unknown_is_retained_for_review(self):
+        activity = [
+            {'prca_num': '100', 'item_e1_num': '1', 'penny_contract_flag': 'Y',
+             'penny_customer_status': 'Y'},
+            {'prca_num': '100', 'item_e1_num': '2', 'penny_contract_flag': 'Y',
+             'penny_customer_status': 'UNKNOWN_AMBIGUOUS_CUSTOMER_ELIGIBILITY'},
+            {'prca_num': '100', 'item_e1_num': '3', 'penny_contract_flag': 'N',
+             'penny_customer_status': 'NOT_PENNY_ITEM'},
+        ]
+
+        retained, excluded, uncertain = partition_penny_contract_activity(activity)
+
+        self.assertEqual([row['item_e1_num'] for row in excluded], ['1'])
+        self.assertEqual([row['item_e1_num'] for row in retained], ['2', '3'])
+        self.assertEqual([row['item_e1_num'] for row in uncertain], ['2'])
+
+    def test_category_net_impact_excludes_confirmed_penny_activity(self):
+        report, activity = fixture()
+        activity[1].update(penny_contract_flag='Y', penny_customer_status='Y')
+
+        rows = category_scenarios(report, activity)
+
+        self.assertTrue(all(row['category_item_count'] == 1 for row in rows))
+        self.assertTrue(all(row['baseline_sales_3m'] == '100.00' for row in rows))
+
+    def test_unknown_penny_activity_blocks_category_impact(self):
+        report, activity = fixture()
+        activity[1].update(penny_contract_flag='Y',
+                           penny_customer_status='UNKNOWN_AMBIGUOUS_CUSTOMER_ELIGIBILITY')
+
+        rows = category_scenarios(report, activity)
+
+        self.assertTrue(all(row['baseline_sales_3m'] is None for row in rows))
+        self.assertTrue(all('PENNY_CUSTOMER_STATUS_UNKNOWN_FOR_ACTIVITY' in row['exceptions']
+                            for row in rows))
+
     def test_unrequested_items_included_with_distinct_price_scenarios(self):
         report, activity = fixture()
         rows = category_scenarios(report, activity)

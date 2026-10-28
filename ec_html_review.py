@@ -58,7 +58,7 @@ def style() -> str:
     .meta { display: flex; flex-wrap: wrap; gap: 8px 24px; padding: 14px 0;
       border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
     .meta strong { margin-right: 5px; }
-    .metrics { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin: 18px 0; }
+    .metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; margin: 18px 0; }
     .metric { padding: 14px 16px; border: 1px solid var(--line); background: var(--panel); }
     .metric b { display: block; color: var(--teal); font-size: 25px; }
     .metric span { color: var(--muted); font-size: 13px; }
@@ -85,22 +85,34 @@ def document(title: str, body: str) -> str:
 
 
 def collect_requests(report: dict) -> dict[str, dict]:
-    requests = defaultdict(lambda: {'items': [], 'excluded': [], 'tiers': []})
+    requests = defaultdict(lambda: {
+        'items': [], 'excluded': [], 'penny_lines': [], 'tiers': [], 'category_tiers': []})
     for row in report.get('scenarios', []):
         if row.get('candidate_tier') == 1:
-            requests[str(row['request_id'])]['items'].append(row)
+            request = requests[str(row['request_id'])]
+            request['items'].append(row)
+            if row.get('penny_contract_flag') in ('Y', 'UNKNOWN'):
+                request['penny_lines'].append(row)
     for row in report.get('excluded_unpriced_lines', []):
-        requests[str(row['request_id'])]['excluded'].append(row)
+        request = requests[str(row['request_id'])]
+        request['excluded'].append(row)
+        if row.get('penny_contract_flag') in ('Y', 'UNKNOWN'):
+            request['penny_lines'].append(row)
+    for row in report.get('excluded_penny_contract_lines', []):
+        requests[str(row['request_id'])]['penny_lines'].append(row)
     for row in report.get('groups', []):
         requests[str(row['request_id'])]['tiers'].append(row)
+    for row in report.get('category_groups', []):
+        requests[str(row['request_id'])]['category_tiers'].append(row)
     return dict(sorted(requests.items()))
 
 
 def request_account(records: dict) -> tuple[str, str]:
-    provided = sorted({str(row.get('account_provided')) for row in records['items'] + records['excluded']
+    line_rows = records['items'] + records['excluded'] + records['penny_lines']
+    provided = sorted({str(row.get('account_provided')) for row in line_rows
                        if row.get('account_provided') not in (None, '')})
     resolved = sorted({str(row.get('prca_num') or row.get('prca'))
-                       for row in records['items'] + records['excluded']
+                       for row in line_rows
                        if row.get('prca_num') or row.get('prca')})
     return ', '.join(provided) or 'Unavailable', ', '.join(resolved) or 'Unavailable'
 
@@ -109,11 +121,25 @@ def build_request_page(request_id: str, records: dict, report: dict) -> str:
     provided, resolved = request_account(records)
     items = sorted(records['items'], key=lambda row: (str(row.get('item') or ''), str(row.get('line_key') or '')))
     excluded = sorted(records['excluded'], key=lambda row: (str(row.get('item') or ''), str(row.get('line_key') or '')))
+    penny_lines = sorted(records['penny_lines'], key=lambda row: (str(row.get('item') or ''), str(row.get('line_key') or '')))
     tiers = sorted(records['tiers'], key=lambda row: (str(row.get('category') or ''), row.get('candidate_tier') or 0))
+    category_tiers = sorted(records['category_tiers'],
+                            key=lambda row: (str(row.get('category') or ''), row.get('candidate_tier') or 0))
+    _, resolved = request_account(records)
+    resolved_prcas = set(resolved.split(', ')) if resolved != 'Unavailable' else set()
+    penny_activity = [row for row in report.get('excluded_penny_contract_activity', [])
+                      if str(row.get('prca_num')) in resolved_prcas]
+    uncertain_activity = [row for row in report.get('uncertain_penny_contract_activity', [])
+                          if str(row.get('prca_num')) in resolved_prcas]
     item_rows = [[row.get('item'), row.get('source_item_description'), row.get('requested_uom'),
                   row.get('sell_uom'), row.get('requested_price'), row.get('current_tier'),
                   row.get('current_tier_cost'), row.get('requested_margin_at_candidate_cost'),
-                  row.get('validation_errors'), row.get('impact_exceptions')]
+                  row.get('penny_contract_flag'), row.get('penny_product_types'),
+                  row.get('penny_man_contract_ids'), row.get('penny_mck_contract_ids'),
+                  row.get('penny_contract_ambiguous'), row.get('penny_customer_status'),
+                  row.get('penny_price_test_status'), row.get('normalized_requested_price'),
+                  row.get('penny_contract_required_flag'), row.get('validation_errors'),
+                  row.get('impact_exceptions')]
                  for row in items]
     tier_rows = [[row.get('category'), row.get('candidate_tier'), row.get('requested_line_count'),
                   row.get('exception_line_count'), row.get('impact_unavailable_line_count'),
@@ -124,19 +150,79 @@ def build_request_page(request_id: str, records: dict, report: dict) -> str:
                       row.get('requested_price'), row.get('price_exclusion_reason'),
                       row.get('account_provided'), row.get('prca_num'), row.get('source_errors')]
                      for row in excluded]
+    penny_line_rows = [[row.get('item'), row.get('source_item_description'),
+                            row.get('requested_price'), row.get('requested_uom'),
+                        row.get('normalized_requested_price'), row.get('prmry_uom'),
+                        row.get('sell_uom'), row.get('buy_uom'),
+                        row.get('sell_to_buy_divisor'), row.get('prmry_to_sell_divisor'),
+                        row.get('prmry_to_buy_divisor'),
+                            row.get('penny_tier_10_cost'), row.get('penny_product_types'),
+                            row.get('penny_man_contract_ids'), row.get('penny_mck_contract_ids'),
+                        row.get('penny_price_normalization_method'),
+                            row.get('penny_contract_flag'), row.get('penny_contract_required_flag'),
+                            row.get('penny_price_test_status'), row.get('penny_contract_ambiguous'),
+                            row.get('penny_customer_status'),
+                            row.get('penny_contract_exclusion_reason')]
+                           for row in penny_lines]
+    activity_rows = [[row.get('item_e1_num'), row.get('item_dsc'), row.get('grouped_lvl2'),
+                      row.get('ipc_sell_uom'), row.get('qty_3_mth'), row.get('sls_3_mth'),
+                      row.get('penny_product_types'), row.get('penny_man_contract_ids'),
+                      row.get('penny_mck_contract_ids'), row.get('penny_contract_ambiguous'),
+                      row.get('penny_customer_status')]
+                     for row in penny_activity]
+    uncertain_rows = [[row.get('item_e1_num'), row.get('item_dsc'), row.get('grouped_lvl2'),
+                       row.get('ipc_sell_uom'), row.get('qty_3_mth'), row.get('sls_3_mth'),
+                       row.get('penny_product_types'), row.get('penny_man_contract_ids'),
+                       row.get('penny_mck_contract_ids'), row.get('penny_contract_ambiguous'),
+                       row.get('penny_customer_status')]
+                      for row in uncertain_activity]
     item_table = table(['Item', 'Description', 'Requested UOM', 'Sell UOM', 'Requested Price',
-                        'Current Tier', 'Current Tier Cost', 'Margin at Tier 1 Cost',
-                        'Validation Exceptions', 'Impact Exceptions'], item_rows,
+                                'Current Tier', 'Current Tier Cost', 'Margin at Tier 1 Cost', 'Penny Item',
+                                'Penny Product', 'Manufacturer Contract IDs', 'McK Contract IDs',
+                                'Contract Ambiguous', 'Customer On Contract', 'Tier 10 Price Test',
+                                'Normalized Price', 'Penny Contract Required',
+                                'Validation Exceptions', 'Impact Exceptions'], item_rows,
                        'No positive-price lines were eligible for tier analysis.')
     tier_table = table(['Category', 'Tier', 'Requested Lines', 'Exception Lines',
                         'Impact Unavailable', 'Annualized Cost Change',
                         'Annualized Customer Spend Change', 'Annualized GP Change Proxy',
                         'Aggregation Exception'], tier_rows,
                        'No category-tier scenarios were calculated for this request.')
+    category_tier_rows = [[row.get('category'), row.get('candidate_tier'), row.get('category_item_count'),
+                           row.get('baseline_sales_3m'), row.get('baseline_margin'),
+                           row.get('tier_only_margin'), row.get('requested_price_margin'),
+                           row.get('annualized_gp_change'), row.get('annualized_internal_cost_change'),
+                           row.get('annualized_customer_spend_change'), row.get('suggested_for_review'),
+                           row.get('screening_flags'), row.get('exceptions')]
+                          for row in category_tiers]
+    category_tier_table = table(['Category', 'Tier', 'Portfolio Items', 'Baseline Sales 3m',
+                                 'Baseline Margin', 'Tier-only Margin', 'Requested-price Margin',
+                                 'Annualized GP Change', 'Annualized Internal Cost Change',
+                                 'Annualized Customer Spend Change', 'Suggested for Review',
+                                 'Screening Flags', 'Exceptions'], category_tier_rows,
+                                'No customer-category net-impact scenarios were calculated for this request.')
     excluded_table = table(['Item', 'Description', 'Requested UOM', 'Raw Requested Price',
                             'Exclusion Reason', 'Source Account', 'Resolved PRCA',
                             'Source Validation Flags'], excluded_rows,
                            'No requested lines were excluded for price.')
+    penny_line_table = table(['Item', 'Description', 'Raw Requested Price', 'Requested UOM',
+                              'Price in Sell UOM', 'Primary UOM', 'Sell UOM', 'Buy UOM',
+                              'Sell-to-Buy Divisor', 'Primary-to-Sell Divisor', 'Primary-to-Buy Divisor',
+                              'Tier 10 Cost', 'Penny Product',
+                                  'Manufacturer Contract IDs', 'McK Contract IDs', 'Active Penny Item',
+                              'UOM Normalization', 'Penny Contract Required', 'Tier 10 Price Test', 'Contract Ambiguous',
+                                  'Customer On Contract', 'Exclusion Reason'], penny_line_rows,
+                                 'No requested line matched an active penny contract item.')
+    penny_activity_table = table(['Item', 'Description', 'Category', 'IPC UOM', 'Quantity 3 Months',
+                                  'Sales 3 Months', 'Penny Product', 'Manufacturer Contract IDs',
+                                  'McK Contract IDs', 'Contract Ambiguous', 'Customer On Contract'],
+                                 activity_rows,
+                                 'No on-contract penny activity was excluded for this customer.')
+    uncertain_activity_table = table(['Item', 'Description', 'Category', 'IPC UOM', 'Quantity 3 Months',
+                                      'Sales 3 Months', 'Penny Product', 'Manufacturer Contract IDs',
+                                      'McK Contract IDs', 'Contract Ambiguous', 'Customer On Contract'],
+                                     uncertain_rows,
+                                     'No penny activity has an uncertain customer status.')
     header = (f'<a class="back" href="index.html">&larr; All requests</a>'
               '<div class="eyebrow">Internal pricing review</div>'
               f'<h1>{html.escape(request_id)}</h1>'
@@ -148,10 +234,16 @@ def build_request_page(request_id: str, records: dict, report: dict) -> str:
               '<div class="metrics">'
               f'<div class="metric"><b>{len(items)}</b><span>Positive-price lines analyzed</span></div>'
               f'<div class="metric"><b>{len(excluded)}</b><span>Unpriced lines excluded and retained</span></div>'
+              f'<div class="metric"><b>{len(penny_lines)}</b><span>Penny items identified or unresolved</span></div>'
+              f'<div class="metric"><b>{len(penny_activity)}</b><span>On-contract activity excluded</span></div>'
               f'<div class="metric"><b>{len(tiers)}</b><span>Category-tier scenarios</span></div></div>')
     body = (header + '<h2>Positive-price item review</h2>' + item_table
-            + '<h2>Category tier scenarios</h2>' + tier_table
+            + '<h2>Requested item aggregation scenarios</h2>' + tier_table
+            + '<h2>Customer category net-impact scenarios</h2>' + category_tier_table
+            + '<h2>Penny Contract Items</h2>' + penny_line_table
             + '<h2>Excluded unpriced lines</h2>' + excluded_table
+            + '<h2>On-contract penny activity excluded from impact</h2>' + penny_activity_table
+            + '<h2>Penny activity with uncertain customer status</h2>' + uncertain_activity_table
             + '<p class="foot">Source hash: ' + cell(report.get('source_hash'))
             + ' | Reference hash: ' + cell(report.get('reference_hash'))
             + '<br>Annualized values multiply three-month activity by four; they are not forecasts. Missing values are unavailable, not zero. No approval, email, source update, or pricing load was performed.</p>')
@@ -162,9 +254,14 @@ def build_index(report: dict, requests: dict[str, dict], filenames: dict[str, st
     rows = []
     for request_id, records in requests.items():
         provided, resolved = request_account(records)
+        resolved_prcas = set(resolved.split(', ')) if resolved != 'Unavailable' else set()
+        excluded_activity_count = sum(str(row.get('prca_num')) in resolved_prcas
+            for row in report.get('excluded_penny_contract_activity', []))
+        penny_line_count = len(records['penny_lines'])
         rows.append([f'<a href="{html.escape(filenames[request_id], quote=True)}">{html.escape(request_id)}</a>',
                      html.escape(provided), html.escape(resolved), len(records['items']),
-                     len(records['excluded']), len(records['tiers'])])
+                     len(records['excluded']), penny_line_count,
+                     excluded_activity_count, len(records['tiers']) + len(records['category_tiers'])])
     body_rows = ''.join('<tr>' + ''.join(f'<td>{value}</td>' for value in row) + '</tr>'
                         for row in rows)
     summary = report.get('summary', {})
@@ -174,10 +271,13 @@ def build_index(report: dict, requests: dict[str, dict], filenames: dict[str, st
             '<p class="lede">Static local review generated from the read-only request snapshot and current reference data. No external scripts or network assets are used.</p>'
             f'<div class="metrics"><div class="metric"><b>{cell(summary.get("requested_lines"))}</b><span>Source lines</span></div>'
             f'<div class="metric"><b>{cell(summary.get("tier_analyzed_lines"))}</b><span>Positive-price lines analyzed</span></div>'
-            f'<div class="metric"><b>{cell(summary.get("excluded_unpriced_lines"))}</b><span>Unpriced lines retained as exceptions</span></div></div>'
+            f'<div class="metric"><b>{cell(summary.get("excluded_unpriced_lines"))}</b><span>Unpriced lines retained as exceptions</span></div>'
+            f'<div class="metric"><b>{cell(summary.get("excluded_penny_contract_lines"))}</b><span>Penny lines excluded</span></div>'
+            f'<div class="metric"><b>{cell(summary.get("excluded_penny_contract_activity_rows"))}</b><span>On-contract activity excluded</span></div></div>'
             '<h2>Requests</h2><div class="table-wrap"><table><thead><tr>'
             '<th scope="col">Request</th><th scope="col">Source Account</th><th scope="col">Resolved PRCA</th>'
-            '<th scope="col">Analyzed Lines</th><th scope="col">Excluded Lines</th>'
+            '<th scope="col">Analyzed Lines</th><th scope="col">Unpriced Excluded</th>'
+            '<th scope="col">Penny Items</th><th scope="col">Penny Activity Excluded</th>'
             '<th scope="col">Tier Scenarios</th></tr></thead><tbody>' + body_rows + '</tbody></table></div>'
             '<p class="foot">Evaluated: ' + cell(report.get('evaluated_at'))
             + ' | Source hash: ' + cell(report.get('source_hash'))
