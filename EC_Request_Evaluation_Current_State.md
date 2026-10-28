@@ -4,6 +4,60 @@
 
 This note records the current EC request-evaluation logic shown in the shared SQL files. It distinguishes the request clarification query from the manually parameterized Tapestry cost lookup. It does not assume these scripts are yet connected to the Smartsheet notebook pipeline or to an automated load process.
 
+## Operator-Confirmed Smartsheet Lifecycle
+
+1. A request is submitted in Smartsheet. Its header and attachment lines do not
+	enter the ETL tables or PBI until an ETL run extracts them.
+2. After extraction, the request should appear as pending while the analyst runs
+	the review. Tier changes, contract submission where applicable, and rep
+	communication remain manual actions.
+3. After the analyst has handled the request, the analyst marks it completed in
+	Smartsheet. Smartsheet automation may move the row to the Completed tab before
+	the next ETL run.
+4. The next ETL scan should use the current Completed-stage row and attachment,
+	snapshot the resulting tier and Tapestry cost per line, and expose approved or
+	rejected status/reason to PBI. Completion alone must not be interpreted as a
+	price approval unless the decision fields and checks support that result.
+
+The current intake code scans Landing, Intermediate, Completed, and Rejected by
+default. If a request ID appears in multiple stages, it selects the furthest
+configured stage and records the duplicate stages. It fetches attachments from
+the selected stage row. Thus a run can ingest a request directly from Completed
+if the intermediate row moved before that run; it does not need to observe the
+intermediate stage transition. Raw ingestion snapshots are append-only and the
+status view selects the latest header snapshot.
+
+The PBI status view currently omits `CMPLTD_FLG` and `CMPLTD_DT` from its final
+projection. The line view exposes intake/validation fields, not final approved
+tiers or approved costs. Completion status, per-line approval/rejection, and a
+post-tier-change Tapestry cost snapshot still need to be added to the reporting
+contract. The current intake does not trigger analysis, update tiers, send the
+approved-cost email, or mark requests complete.
+
+## Operator-Confirmed Completion and Decision Flow
+
+The operator describes the current tracking process as moving handled requests in
+Smartsheet to a new tab and marking them completed. Completion is a manual work-
+tracking state; it is not itself pricing approval, a final determination, or a
+load instruction.
+
+After completion, the assigned tier is checked. For each requested item that is
+not rejected for another reason, the final decision record should retain the
+assigned tier and the corresponding Tapestry cost as a reference, on the verified
+Tapestry cost UOM. The requested price remains the source value and is not changed
+by the cost reference. A decision-status field should distinguish approved and
+rejected items, with an explicit reason for rejected items. Pending review or
+correction may be tracked separately from final approval/rejection; the exact
+status vocabulary remains a business-owner decision.
+
+Tier or contract updates are not automated in this phase. Any later update/load
+process is separate future scope and would require an approved policy, confirmed
+loader contract, authorization, and post-load reconciliation.
+
+This is the operator-described Smartsheet process. The repository's current
+intake examples and ETL code are Smartsheet/October-snapshot based, but no
+completion-triggered assigned-tier evaluation is implemented here.
+
 ## Request Clarification Query
 
 `OCTOBER 2026 MCKB REBATE REQUEST 1.sql` uses `PRD_SBX_MMS_DB.PRC.MCKB_RBT_TEST_OCT_2026` as its request source. It:

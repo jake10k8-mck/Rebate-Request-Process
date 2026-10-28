@@ -6,11 +6,13 @@ import json
 from datetime import date, timedelta
 from pathlib import Path
 
-from ec_category_review import category_scenarios, requested_item_tier_scenarios
+from ec_category_review import (category_scenarios, partition_penny_contract_activity,
+                                requested_item_tier_scenarios)
 from ec_customer_workbooks import export_customers
 from ec_etl_preview import build_preview, connect_from_environment, json_value
 from ec_review import (calculate_scenarios, group_scenarios, numeric_id,
-                       attach_excluded_reference_context, partition_unpriced_lines,
+                       attach_excluded_reference_context, partition_penny_contract_lines,
+                       partition_unpriced_lines,
                        prepare_requests, read_references)
 from ec_test_inputs import SOURCE_TABLE, normalize_snapshot, read_snapshot, rows_hash
 from ec_workflow import utc_now
@@ -80,12 +82,14 @@ def analyze_snapshot(connection, since: str, until: str,
     preview = build_preview(headers, lines)
     preview['mode'] = 'READ_ONLY_ETL_PREVIEW_NOT_APPROVED_NOT_LOADABLE'
     inputs, all_context = prepare_requests(preview)
-    context, excluded_unpriced_lines = partition_unpriced_lines(all_context)
-    eligible_line_keys = {row['line_key'] for row in context}
+    price_eligible_lines, excluded_unpriced_lines = partition_unpriced_lines(all_context)
     all_references = read_references(connection, inputs)
-    references = [row for row in all_references if row.get('line_key') in eligible_line_keys]
     excluded_unpriced_lines = attach_excluded_reference_context(
         excluded_unpriced_lines, all_references)
+    context, excluded_penny_contract_lines = partition_penny_contract_lines(
+        price_eligible_lines, all_references)
+    eligible_line_keys = {row['line_key'] for row in context}
+    references = [row for row in all_references if int(row.get('line_key')) in eligible_line_keys]
     scenarios = calculate_scenarios(context, references)
     for row in scenarios:
         row['analyst_benchmark_tier'] = row.get('current_tier')
@@ -94,12 +98,16 @@ def analyze_snapshot(connection, since: str, until: str,
     prcas = sorted({numeric_id(row.get('prca_num')) for row in all_references
                     if numeric_id(row.get('prca_num'))})
     activity = fetch_customer_activity(connection, prcas)
+    _, excluded_penny_activity, uncertain_penny_activity = partition_penny_contract_activity(activity)
     report_base = {
         'mode': 'INTERNAL_REVIEW_ONLY_NOT_APPROVED_NOT_LOADABLE',
         'evaluated_at': utc_now(),
         'source_hash': rows_hash(source_rows),
         'lines': context,
         'excluded_unpriced_lines': excluded_unpriced_lines,
+        'excluded_penny_contract_lines': excluded_penny_contract_lines,
+        'excluded_penny_contract_activity': excluded_penny_activity,
+        'uncertain_penny_contract_activity': uncertain_penny_activity,
         'scenarios': scenarios,
         'groups': group_scenarios(scenarios),
         'activity': activity,
@@ -112,6 +120,8 @@ def analyze_snapshot(connection, since: str, until: str,
             'Request-tier suggestion uses requested prices and candidate costs, with one sell unit per distinct requested SKU because requested quantities are unavailable.',
             'Duplicate source lines are preserved in requested-line outputs and counted once per distinct item in request-tier margins.',
             'Category impact uses customer IPC activity; requested price replaces IPC revenue only for requested items with positive comparable activity.',
+            'Active penny items whose normalized requested price cannot exceed Tier 10 cost are excluded from all tier scenarios.',
+            'Confirmed on-contract penny activity is excluded from category net impact; ambiguous customer status blocks impact.',
             'No volume is assumed for requested items without IPC activity; all missing and UOM-incompatible values remain explicit exceptions.',
             'Annualization is three-month activity multiplied by four, not a forecast.',
             'No email, approval, load, or source-system write is performed.',
@@ -120,7 +130,7 @@ def analyze_snapshot(connection, since: str, until: str,
     category_rows = category_scenarios(report_base, activity)
     request_tier_rows = requested_item_tier_scenarios(report_base)
     reference_hash = hashlib.sha256(json.dumps(
-        {'item': references, 'activity': activity}, default=json_value, sort_keys=True
+        {'item': all_references, 'activity': activity}, default=json_value, sort_keys=True
     ).encode('utf-8')).hexdigest()
     metadata = {
         'source_table': SOURCE_TABLE,
@@ -134,6 +144,9 @@ def analyze_snapshot(connection, since: str, until: str,
         'selected_ec_lines': len(all_context),
         'tier_analyzed_lines': len(context),
         'excluded_unpriced_lines': len(excluded_unpriced_lines),
+        'excluded_penny_contract_lines': len(excluded_penny_contract_lines),
+        'excluded_penny_contract_activity_rows': len(excluded_penny_activity),
+        'uncertain_penny_contract_activity_rows': len(uncertain_penny_activity),
         'selected_ec_customers': len(prcas),
         'candidate_item_rows': len(scenarios),
         'category_scenarios': len(category_rows),

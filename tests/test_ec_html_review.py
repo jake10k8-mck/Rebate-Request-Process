@@ -27,6 +27,12 @@ def example():
                     'annualized_cost_change': None,
                     'annualized_customer_spend_change': None,
                     'annualized_gross_profit_change_proxy': None}],
+        'category_groups': [{'request_id': 'MBR-TEST-1', 'prca': '100', 'category': 'GAUZE',
+            'candidate_tier': 1, 'category_item_count': 2, 'baseline_sales_3m': '100',
+            'baseline_margin': '0.2', 'tier_only_margin': '0.2', 'requested_price_margin': '0.1',
+            'annualized_gp_change': '-40', 'annualized_internal_cost_change': '0',
+            'annualized_customer_spend_change': '40', 'suggested_for_review': False,
+            'screening_flags': [], 'exceptions': []}],
         'excluded_unpriced_lines': [{
             'request_id': 'MBR-TEST-1', 'line_key': 2, 'prca_num': '100',
             'account_provided': '900', 'item': '43', 'source_item_description': 'Missing price',
@@ -38,6 +44,23 @@ def example():
             'requested_uom': 'BX', 'requested_price': '0',
             'price_exclusion_reason': 'ZERO_REQUESTED_PRICE', 'source_errors': ['INVALID_REQUESTED_PRICE'],
         }],
+        'excluded_penny_contract_lines': [{
+            'request_id': 'MBR-TEST-1', 'line_key': 4, 'prca_num': '100',
+            'account_provided': '900', 'item': '44', 'source_item_description': 'Penny contract item',
+            'requested_uom': 'EA', 'requested_price': '1', 'normalized_requested_price': '1',
+            'sell_uom': 'EA', 'penny_tier_10_cost': '2', 'penny_product_types': 'DISPENSER',
+            'penny_man_contract_ids': 'MCKB DISPENSERS', 'penny_mck_contract_ids': '87918',
+            'penny_contract_ambiguous': False, 'penny_customer_status': 'Y',
+            'penny_contract_exclusion_reason': 'PENNY_ITEM_CANNOT_ACHIEVE_POSITIVE_TIER_10_MARGIN',
+        }],
+        'excluded_penny_contract_activity': [{
+            'prca_num': '100', 'item_e1_num': '88', 'item_dsc': 'Excluded penny activity',
+            'grouped_lvl2': 'GAUZE', 'ipc_sell_uom': 'EA', 'qty_3_mth': 1, 'sls_3_mth': 2,
+            'penny_customer_status': 'Y', 'penny_product_types': 'DISPENSER',
+            'penny_man_contract_ids': 'MCKB DISPENSERS', 'penny_mck_contract_ids': '87918',
+            'penny_contract_ambiguous': False,
+        }],
+        'uncertain_penny_contract_activity': [],
     }
 
 
@@ -50,6 +73,10 @@ class HtmlReviewTests(unittest.TestCase):
         self.assertIn('MBR-TEST-2', index)
         request_page = next(value for name, value in pages.items() if name.startswith('request-MBR-TEST-1-'))
         self.assertIn('MISSING_REQUESTED_PRICE', request_page)
+        self.assertIn('PENNY_ITEM_CANNOT_ACHIEVE_POSITIVE_TIER_10_MARGIN', request_page)
+        self.assertIn('Excluded penny activity', request_page)
+        self.assertIn('Customer category net-impact scenarios', request_page)
+        self.assertIn('Annualized Internal Cost Change', request_page)
         self.assertIn('&lt;script&gt;alert(1)&lt;/script&gt;', request_page)
         self.assertNotIn('<script>alert(1)</script>', request_page)
         self.assertIn('NOT APPROVED', request_page)

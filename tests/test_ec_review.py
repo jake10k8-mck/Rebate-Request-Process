@@ -1,7 +1,8 @@
 import unittest
 from decimal import Decimal
 
-from ec_review import (calculate_scenarios, group_scenarios, partition_unpriced_lines,
+from ec_review import (calculate_scenarios, group_scenarios, normalize_requested_price_to_sell_uom,
+                       partition_penny_contract_lines, partition_unpriced_lines,
                        attach_excluded_reference_context, prepare_requests, spreadsheet_cell)
 
 
@@ -50,6 +51,58 @@ class ReviewTests(unittest.TestCase):
         self.assertEqual(result[0]['account_provided'], '91053545')
         self.assertEqual(result[0]['prca_num'], '20149288')
         self.assertEqual(result[0]['grouped_lvl2'], 'WOUND CARE')
+
+    def test_requested_price_normalizes_buy_and_primary_uoms_to_sell_basis(self):
+        buy_price, buy_factor, buy_method = normalize_requested_price_to_sell_uom(
+            {'requested_price': '10', 'requested_uom': 'CS'},
+            {'sell_uom': 'EA', 'buy_uom': 'CS', 'prmry_uom': 'EA',
+             'sell_to_buy_divisor': '10', 'prmry_to_sell_divisor': '1'})
+        primary_price, primary_factor, primary_method = normalize_requested_price_to_sell_uom(
+            {'requested_price': '1', 'requested_uom': 'EA'},
+            {'sell_uom': 'CS', 'buy_uom': 'CS', 'prmry_uom': 'EA',
+             'sell_to_buy_divisor': '1', 'prmry_to_sell_divisor': '10'})
+
+        self.assertEqual((buy_price, buy_factor, buy_method),
+                         (Decimal('1'), '1/10', 'BUY_TO_SELL_DIVISOR'))
+        self.assertEqual((primary_price, primary_factor, primary_method),
+                         (Decimal('10'), '10', 'PRIMARY_TO_SELL_DIVISOR'))
+
+    def test_ambiguous_conversion_and_missing_factor_are_unknown(self):
+        ambiguous = normalize_requested_price_to_sell_uom(
+            {'requested_price': '1', 'requested_uom': 'EA'},
+            {'sell_uom': 'CS', 'buy_uom': 'EA', 'prmry_uom': 'EA',
+             'sell_to_buy_divisor': '10', 'prmry_to_sell_divisor': '12'})
+        missing = normalize_requested_price_to_sell_uom(
+            {'requested_price': '1', 'requested_uom': 'EA'},
+            {'sell_uom': 'CS', 'buy_uom': 'CS', 'prmry_uom': 'EA',
+             'prmry_to_sell_divisor': None})
+
+        self.assertEqual(ambiguous, (None, None, 'UNKNOWN_AMBIGUOUS_UOM_CONVERSION'))
+        self.assertEqual(missing, (None, None, 'UNKNOWN_MISSING_PRIMARY_TO_SELL_DIVISOR'))
+
+    def test_penny_price_gate_excludes_at_or_below_tier_ten_and_keeps_unknown_uom(self):
+        lines = [
+            {'line_key': 1, 'requested_price': '10', 'requested_uom': 'EA'},
+            {'line_key': 2, 'requested_price': '10', 'requested_uom': 'BOX'},
+            {'line_key': 3, 'requested_price': '11', 'requested_uom': 'EA'},
+        ]
+        references = []
+        for line_key, tier_ten_cost, penny_flag in [(1, '10', 'Y'), (2, '10', 'Y'), (3, '10', 'Y')]:
+            references.append({'line_key': line_key, 'tier_num': 10, 'tier_cost': tier_ten_cost,
+                'penny_contract_flag': penny_flag, 'penny_product_types': 'DISPENSER',
+                'penny_man_contract_ids': 'MCKB DISPENSERS', 'penny_mck_contract_ids': '87918',
+                'penny_contract_match_count': 1, 'penny_contract_ambiguous': False,
+                'sell_uom': 'EA', 'buy_uom': 'CS', 'prmry_uom': 'EA',
+                'sell_to_buy_divisor': '10', 'prmry_to_sell_divisor': '1'})
+
+        eligible, excluded = partition_penny_contract_lines(lines, references)
+
+        self.assertEqual([row['line_key'] for row in excluded], [1])
+        self.assertEqual(excluded[0]['penny_contract_required_flag'], 'Y')
+        self.assertEqual(excluded[0]['normalized_requested_price'], '10')
+        self.assertEqual([row['line_key'] for row in eligible], [2, 3])
+        self.assertEqual(eligible[0]['penny_contract_required_flag'], 'UNKNOWN')
+        self.assertEqual(eligible[0]['penny_price_test_status'], 'UNKNOWN_UNSUPPORTED_UOM_CONVERSION')
 
     def test_all_tiers_preserved_unchanged_price_and_impact_signs(self) -> None:
         inputs, context, references = fixture()

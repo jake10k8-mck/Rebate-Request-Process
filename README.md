@@ -322,6 +322,64 @@ approved local storage and permissions. No approvals are created by this runner.
 There is no final tier recommendation while tier-selection policy is provisional.
 Requested price is preserved, not replaced by the benchmark or a calculated price.
 
+### Penny Contract Screening
+
+The read-only review joins current, effective rows from
+`PRD_SBX_MMS_DB.PRC.MCKB_PENNY_CONTRACT_INFO` by item and joins manufacturer
+contract IDs to `PRD_PL_MMS_DATALAKE_DB.MMSDW.CONTRACT_HEADER`. It reports all
+active matches and marks multiple active matches ambiguous instead of choosing
+one. The match date is `CURRENT_DATE()` with inclusive `START_DT`/`END_DT` bounds.
+
+Requested prices are normalized to item `SELL_UOM` when the declared UOM and
+item-master conversion fields identify one consistent conversion:
+`SELL_TO_BUY_DIVISOR` for buy-to-sell and `PRMRY_TO_SELL_DIVISOR` for
+primary-to-sell. Missing or conflicting conversion factors make the penny price
+test unknown; the line remains in tier analysis with its UOM exception.
+
+For a positive-price active penny item, normalized price at or below Tier 10
+cost cannot yield positive Tier 10 margin. That line is excluded from all tier
+scenarios and reported on the single **Penny Contract** worksheet and the
+request's HTML page. Positive prices above Tier 10 cost remain in tier analysis
+and are still identified as penny items. Blank, zero, negative, and invalid
+prices remain in the existing unpriced exception outputs and are marked not
+required.
+
+Customer-on-contract status is separate from the requested-line price rule. It
+uses the contract-header `SHIP_TO_ELIG_RQRD_FLG` and current E1 customer rules:
+`N` allows `B`/`X`, `Y` allows `S`, and names containing `PATIENT NAME` are
+excluded. Confirmed on-contract penny activity is omitted from customer-category
+net impact and shown in the same **Penny Contract** worksheet and HTML page.
+Unknown or ambiguous customer status remains visible and blocks the affected
+category impact. IDEX is not classified because it is not present in the penny
+reference table.
+
+### Completion and Final Decision Record
+
+The operator-described flow is: request submitted in Smartsheet; after the ETL
+extracts its header and attachment lines, the request is pending while the
+analyst runs the review; tier changes, contract submission where applicable, and
+rep communication are handled manually; then the analyst marks the request
+completed. Smartsheet automation may move it to the Completed tab before the next
+ETL run. The intake scans all four configured stages and selects the furthest
+stage for a request ID, so a request moved before extraction can still be read
+from Completed without first appearing in an ETL snapshot as Intermediate.
+
+Completion means the analyst finished handling the request; it is not by itself
+proof of approval or authorization to load. After completion, the intended final
+record should snapshot each line's assigned tier and current Tapestry cost on the
+verified sell-UOM basis. The requested price remains unchanged. A decision-status
+column should distinguish approved from rejected items, with a rejection reason.
+Pending review or correction can be tracked separately if agreed.
+
+The current PBI status view does not yet expose the Smartsheet completion flag or
+date, and its line view contains intake validation rather than final approved
+tiers/costs. The current review also does not trigger from a Smartsheet stage
+move, update tiers, send approved-cost emails, or mark requests complete.
+
+The current review package is advisory and does not move Smartsheet requests,
+mark them complete, or write a final approval. Automated tier/contract updates
+and production loads are future scope, not part of this phase.
+
 ### Calculation Basis
 
 - Tapestry costs use item `SELL_UOM`, as confirmed. Missing/mismatched requested

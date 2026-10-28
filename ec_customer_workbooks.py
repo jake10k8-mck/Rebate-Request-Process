@@ -22,6 +22,7 @@ NUMBER_FIELDS = {
     'requested_price', 'mac_cost_amt', 'current_tier_cost', 'qty_3_mth', 'sls_3_mth',
     'historical_realized_unit_price', 'tier_cost', 'annualized_cost_change',
     'annualized_customer_spend_change', 'annualized_gross_profit_change_proxy', 'benchmark_price',
+    'normalized_requested_price', 'penny_tier_10_cost',
 }
 
 
@@ -93,6 +94,18 @@ def split_customers(report: dict) -> dict:
         prca = numeric_id(row.get('prca_num') or row.get('account_provided'))
         if prca:
             grouped[prca]
+    for row in report.get('excluded_penny_contract_lines', []):
+        prca = numeric_id(row.get('prca_num') or row.get('account_provided'))
+        if prca:
+            grouped[prca]
+    for row in report.get('excluded_penny_contract_activity', []):
+        prca = numeric_id(row.get('prca_num'))
+        if prca:
+            grouped[prca]
+    for row in report.get('uncertain_penny_contract_activity', []):
+        prca = numeric_id(row.get('prca_num'))
+        if prca:
+            grouped[prca]
     if any(len(values) != 1 for values in owners.values()):
         raise ValueError('One source line resolves to multiple customers')
     if any(sorted(values) != list(range(1, 11)) for values in tier_counts.values()):
@@ -110,7 +123,13 @@ def make_customer_workbook(prca: str, scenarios: list[dict], report: dict):
     requests = sorted({row['request_id'] for row in scenarios})
     excluded_unpriced = [row for row in report.get('excluded_unpriced_lines', [])
                          if numeric_id(row.get('prca_num') or row.get('account_provided')) == prca]
-    requests = sorted(set(requests) | {row.get('request_id') for row in excluded_unpriced
+    excluded_penny_lines = [row for row in report.get('excluded_penny_contract_lines', [])
+                            if numeric_id(row.get('prca_num') or row.get('account_provided')) == prca]
+    excluded_penny_activity = [row for row in report.get('excluded_penny_contract_activity', [])
+                               if numeric_id(row.get('prca_num')) == prca]
+    uncertain_penny_activity = [row for row in report.get('uncertain_penny_contract_activity', [])
+                                if numeric_id(row.get('prca_num')) == prca]
+    requests = sorted(set(requests) | {row.get('request_id') for row in excluded_unpriced + excluded_penny_lines
                                       if row.get('request_id')})
     available = len({row['line_key'] for row in scenarios
                      if row.get('annualized_cost_change') is not None})
@@ -119,6 +138,9 @@ def make_customer_workbook(prca: str, scenarios: list[dict], report: dict):
         {'field': 'Request IDs', 'value': ', '.join(requests)},
         {'field': 'Requested source lines', 'value': len(representatives)},
         {'field': 'Unpriced lines excluded from tier analysis', 'value': len(excluded_unpriced)},
+        {'field': 'Penny-contract lines excluded from tier analysis', 'value': len(excluded_penny_lines)},
+        {'field': 'On-contract penny activity excluded from impact', 'value': len(excluded_penny_activity)},
+        {'field': 'Penny activity with unknown customer status', 'value': len(uncertain_penny_activity)},
         {'field': 'Tier scenarios', 'value': len(scenarios)},
         {'field': 'Lines with historical impact', 'value': available},
         {'field': 'Reference evaluation timestamp', 'value': report.get('evaluated_at')},
@@ -139,7 +161,16 @@ def make_customer_workbook(prca: str, scenarios: list[dict], report: dict):
         ('mac_cost_amt', 'MAC'), ('current_tier', 'Current Tier'),
         ('current_tier_cost', 'Current Tier Cost'), ('qty_3_mth', 'Quantity 3 Months'),
         ('sls_3_mth', 'Sales 3 Months'), ('validation_errors', 'Validation Exceptions'),
-        ('impact_exceptions', 'Impact Exceptions'),
+        ('impact_exceptions', 'Impact Exceptions'), ('penny_contract_flag', 'Penny Item'),
+        ('penny_product_types', 'Penny Product Type'),
+        ('penny_man_contract_ids', 'Manufacturer Contract IDs'),
+        ('penny_mck_contract_ids', 'McK Contract IDs'),
+        ('penny_contract_ambiguous', 'Contract Match Ambiguous'),
+        ('penny_customer_status', 'Customer On Contract'),
+        ('penny_price_test_status', 'Tier 10 Price Test'),
+        ('penny_contract_required_flag', 'Penny Contract Required'),
+        ('normalized_requested_price', 'Price in Sell UOM'),
+        ('penny_tier_10_cost', 'Tier 10 Cost'),
     ]
     items = [dict(row, source_price=row['requested_price']) for row in representatives]
     requested_sheet = add_sheet(workbook, 'Requested Items', item_columns, items,
@@ -155,6 +186,22 @@ def make_customer_workbook(prca: str, scenarios: list[dict], report: dict):
         ('source_errors', 'Source Validation Flags'),
     ], excluded_unpriced,
         'Blank, zero, negative, or nonnumeric requested prices are excluded from tier analysis but retained here and in the source audit.')
+    add_sheet(workbook, 'Penny Contract Exclusions', [
+        ('request_id', 'Request'), ('account_provided', 'Source Account'),
+        ('prca_num', 'Resolved PRCA'), ('item', 'Item'),
+        ('source_item_description', 'Description'), ('requested_price', 'Raw Requested Price'),
+        ('requested_uom', 'Requested UOM'), ('normalized_requested_price', 'Price in Sell UOM'),
+        ('sell_uom', 'Sell / Cost UOM'), ('penny_uom_conversion_factor', 'Conversion Factor'),
+        ('penny_price_normalization_method', 'Normalization Method'),
+        ('penny_tier_10_cost', 'Tier 10 Cost'), ('penny_product_types', 'Penny Product Type'),
+        ('penny_man_contract_ids', 'Manufacturer Contract IDs'),
+        ('penny_mck_contract_ids', 'McK Contract IDs'),
+        ('penny_contract_match_count', 'Active Contract Matches'),
+        ('penny_contract_ambiguous', 'Contract Match Ambiguous'),
+        ('penny_customer_status', 'Customer On Contract'),
+        ('penny_contract_exclusion_reason', 'Exclusion Reason'),
+    ], excluded_penny_lines,
+        'These active penny items cannot produce positive margin at Tier 10. Customer status is shown separately and does not gate this line exclusion.')
     request_tiers = [row for row in report.get('request_tier_scenarios', [])
                      if numeric_id(row.get('prca')) == prca]
     request_suggestions = {(row.get('request_id'), row.get('category')): row.get('candidate_tier')
@@ -203,12 +250,55 @@ def make_customer_workbook(prca: str, scenarios: list[dict], report: dict):
                         for row in customer_groups]
     customer_activity = [row for row in report.get('activity', [])
                          if numeric_id(row.get('prca_num')) == prca]
+    penny_records = []
+    for row in representatives:
+        if row.get('penny_contract_flag') in ('Y', 'UNKNOWN'):
+            penny_records.append({**row, 'record_type': 'Requested Line'})
+    penny_records.extend({**row, 'record_type': 'Requested Line'} for row in excluded_penny_lines)
+    penny_records.extend({**row, 'record_type': 'Requested Line'} for row in excluded_unpriced
+                         if row.get('penny_contract_flag') in ('Y', 'UNKNOWN'))
+    penny_records.extend({**row, 'record_type': 'On-contract Activity Excluded'}
+                         for row in excluded_penny_activity)
+    penny_records.extend({**row, 'record_type': 'Customer Status Uncertain'}
+                         for row in uncertain_penny_activity)
+    add_sheet(workbook, 'Penny Contract', [
+        ('record_type', 'Record Type'), ('request_id', 'Request'),
+        ('account_provided', 'Source Account'), ('prca_num', 'Resolved PRCA'),
+        ('item', 'Item'), ('item_e1_num', 'Activity Item'),
+        ('source_item_description', 'Requested Description'), ('item_dsc', 'Activity Description'),
+        ('requested_price', 'Raw Requested Price'), ('requested_uom', 'Requested UOM'),
+        ('normalized_requested_price', 'Price in Sell UOM'), ('prmry_uom', 'Primary UOM'),
+        ('sell_uom', 'Sell / Cost UOM'), ('buy_uom', 'Buy UOM'),
+        ('sell_to_buy_divisor', 'Sell-to-Buy Divisor'),
+        ('prmry_to_sell_divisor', 'Primary-to-Sell Divisor'),
+        ('prmry_to_buy_divisor', 'Primary-to-Buy Divisor'),
+        ('ipc_sell_uom', 'IPC Sell UOM'), ('penny_uom_conversion_factor', 'UOM Conversion'),
+        ('penny_price_normalization_method', 'Normalization Method'),
+        ('penny_tier_10_cost', 'Tier 10 Cost'), ('penny_contract_flag', 'Active Penny Item'),
+        ('penny_contract_required_flag', 'Penny Contract Required'),
+        ('penny_price_test_status', 'Tier 10 Price Test'),
+        ('penny_product_types', 'Penny Product Type'),
+        ('penny_man_contract_ids', 'Manufacturer Contract IDs'),
+        ('penny_mck_contract_ids', 'McK Contract IDs'),
+        ('penny_contract_match_count', 'Active Contract Matches'),
+        ('penny_contract_ambiguous', 'Contract Match Ambiguous'),
+        ('penny_customer_status', 'Customer On Contract'),
+        ('grouped_lvl2', 'Category'), ('qty_3_mth', 'Quantity 3 Months'),
+        ('sls_3_mth', 'Sales 3 Months'), ('penny_contract_exclusion_reason', 'Exclusion Reason'),
+        ('source_errors', 'Source Validation Flags'),
+    ], penny_records,
+        'Penny item identification, price-based Tier 10 exclusion, customer status, and excluded/uncertain activity are separate fields. Confirmed on-contract activity is omitted from net impact; unknown UOM conversions remain in tier analysis.')
     activity_sheet = add_sheet(workbook, 'Existing Category Items', [
         ('item_e1_num', 'Item'), ('item_dsc', 'Description'), ('grouped_lvl2', 'Category'),
         ('ipc_sell_uom', 'IPC Sell UOM'), ('reference_sell_uom', 'Reference Sell UOM'),
         ('qty_3_mth', 'Quantity 3 Months'), ('sls_3_mth', 'Sales 3 Months'),
         ('current_tier', 'Current Tier'), ('prvt_brnd_flg', 'Private Brand Flag'),
-        ('attachment_matches', 'Attachment Matches'),
+        ('attachment_matches', 'Attachment Matches'), ('penny_contract_flag', 'Penny Item'),
+        ('penny_product_types', 'Penny Product Type'),
+        ('penny_man_contract_ids', 'Manufacturer Contract IDs'),
+        ('penny_mck_contract_ids', 'McK Contract IDs'),
+        ('penny_contract_ambiguous', 'Contract Match Ambiguous'),
+        ('penny_customer_status', 'Customer On Contract'),
     ], customer_activity, 'Full mapped customer IPC activity returned by the read-only activity query; not restricted to requested items.')
     add_activity_data_bars(activity_sheet)
     tier_cost_rows = [{**row, **{f'cost_{tier}': row.get(f'tier_{tier}') for tier in range(1, 11)}}
@@ -310,6 +400,9 @@ def make_customer_workbook(prca: str, scenarios: list[dict], report: dict):
     add_source_note_conditional_formatting(source_sheet)
     return workbook, {'prca': prca, 'requests': len(requests), 'requested_lines': len(representatives),
                       'excluded_unpriced_lines': len(excluded_unpriced),
+                      'excluded_penny_contract_lines': len(excluded_penny_lines),
+                      'excluded_penny_contract_activity': len(excluded_penny_activity),
+                      'uncertain_penny_contract_activity': len(uncertain_penny_activity),
                       'tier_scenarios': len(scenarios), 'lines_with_impact': available}
 
 
@@ -505,17 +598,23 @@ def export_customers(report: dict, output_dir: Path) -> dict:
     sheet = add_sheet(index, 'Customers', [
         ('prca', 'Customer PRCA'), ('requests', 'Requests'), ('requested_lines', 'Requested Lines'),
         ('excluded_unpriced_lines', 'Unpriced Lines Excluded'),
+        ('excluded_penny_contract_lines', 'Penny Lines Excluded'),
+        ('excluded_penny_contract_activity', 'Penny Activity Excluded'),
+        ('uncertain_penny_contract_activity', 'Penny Activity Unknown'),
         ('tier_scenarios', 'Tier Scenarios'), ('lines_with_impact', 'Lines With Impact'),
         ('filename', 'Open Customer Workbook'),
     ], index_rows, 'Internal customer workbook index. Requested-item review only; no approvals or production loads.')
     for row_number, record in enumerate(index_rows, start=4):
-        sheet.cell(row_number, 7).hyperlink = record['filename']
-        sheet.cell(row_number, 7).style = 'Hyperlink'
+        sheet.cell(row_number, 10).hyperlink = record['filename']
+        sheet.cell(row_number, 10).style = 'Hyperlink'
     index.save(output_dir / 'Customer_Index.xlsx')
     index.close()
     manifest = {'exported_at': utc_now(), 'customers': len(index_rows),
                 'requested_lines': sum(row['requested_lines'] for row in index_rows),
                 'excluded_unpriced_lines': len(report.get('excluded_unpriced_lines', [])),
+                'excluded_penny_contract_lines': len(report.get('excluded_penny_contract_lines', [])),
+                'excluded_penny_contract_activity': len(report.get('excluded_penny_contract_activity', [])),
+                'uncertain_penny_contract_activity': len(report.get('uncertain_penny_contract_activity', [])),
                 'tier_scenarios': sum(row['tier_scenarios'] for row in index_rows),
                 'source_hash': report.get('source_hash'), 'reference_hash': report.get('reference_hash'),
                 'coverage': report.get('coverage', 'REQUESTED_ITEMS_ONLY'),

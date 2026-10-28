@@ -96,8 +96,26 @@ def requested_item_tier_scenarios(report: dict) -> list[dict]:
     return output
 
 
+def partition_penny_contract_activity(raw_activity: list[dict]) -> tuple[list[dict], list[dict], list[dict]]:
+    retained, excluded, uncertain = [], [], []
+    for raw in raw_activity:
+        row = lower_keys(raw)
+        penny_flag = str(row.get('penny_contract_flag') or '').strip().upper()
+        customer_status = str(row.get('penny_customer_status') or '').strip().upper()
+        if penny_flag == 'Y' and customer_status == 'Y':
+            excluded.append(row)
+        else:
+            retained.append(row)
+            if penny_flag == 'Y' and customer_status.startswith('UNKNOWN'):
+                uncertain.append(row)
+    return retained, excluded, uncertain
+
+
 def category_scenarios(report: dict, raw_activity: list[dict]) -> list[dict]:
-    activity = [lower_keys(row) for row in raw_activity]
+    activity, _, uncertain_penny_activity = partition_penny_contract_activity(raw_activity)
+    uncertain_penny_keys = {(numeric_id(row.get('prca_num')),
+                             numeric_id(row.get('item_e1_num')))
+                            for row in uncertain_penny_activity}
     requested = defaultdict(list)
     for row in report['scenarios']:
         requested[(numeric_id(row.get('prca_num')), row['request_id'], row.get('grouped_lvl2'))].append(row)
@@ -109,6 +127,8 @@ def category_scenarios(report: dict, raw_activity: list[dict]) -> list[dict]:
         base_errors = []
         if not portfolio:
             base_errors.append('NO_EXISTING_MAPPED_CATEGORY_ACTIVITY')
+        if any((prca, numeric_id(row.get('item_e1_num'))) in uncertain_penny_keys for row in portfolio):
+            base_errors.append('PENNY_CUSTOMER_STATUS_UNKNOWN_FOR_ACTIVITY')
         if not category:
             base_errors.append('MISSING_CATEGORY')
         sales, current_cost = Decimal(0), Decimal(0)
