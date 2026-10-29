@@ -5,15 +5,18 @@ from ec_etl_preview import build_preview, read_etl
 
 
 class FakeCursor:
-    def __init__(self) -> None:
+    def __init__(self, result_sets=None) -> None:
         self.calls = []
         self.description = []
         self.rows = []
         self.closed = False
+        self.result_sets = result_sets
 
     def execute(self, statement, parameters) -> None:
         self.calls.append((statement, parameters))
-        if len(self.calls) == 1:
+        if self.result_sets is not None:
+            self.description, self.rows = self.result_sets[len(self.calls) - 1]
+        elif len(self.calls) == 1:
             self.description = [('ROW_ID',), ('CUST_NUM_PRCA',)]
             self.rows = [('request-1', 'customer-1')]
         else:
@@ -28,8 +31,8 @@ class FakeCursor:
 
 
 class FakeConnection:
-    def __init__(self) -> None:
-        self.reader = FakeCursor()
+    def __init__(self, result_sets=None) -> None:
+        self.reader = FakeCursor(result_sets)
 
     def cursor(self):
         return self.reader
@@ -63,13 +66,38 @@ class PreviewTests(unittest.TestCase):
         self.assertEqual(len(connection.reader.calls), 2)
 
     def test_smartsheet_intake_test_reads_separate_tables(self) -> None:
-        connection = FakeConnection()
+        connection = FakeConnection([
+            ([('ROW_ID',), ('CUST_NUM_PRCA',), ('INGESTION_RUN_ID',)],
+             [('request-1', '12345', 'run-1')]),
+            ([('ROW_ID',), ('ITEM_E1_NUM',), ('REQ_UOM',), ('REQ_PRICE',), ('INGESTION_RUN_ID',)],
+             [('request-1', '123456', 'EA', '10.25', 'run-1')]),
+        ])
         read_etl(connection, 'DB', 'PRC', '2026-10-01', '2026-10-27',
                  table_set='smartsheet-intake-test')
         self.assertIn('DB.PRC.EC_REBATE_REQUEST_HEADER_ETL_TEST',
                       connection.reader.calls[0][0])
         self.assertIn('DB.PRC.EC_REBATE_REQUEST_LINES_ETL_TEST',
                       connection.reader.calls[1][0])
+
+    def test_smartsheet_intake_preview_selects_latest_header_and_matching_lines(self) -> None:
+        connection = FakeConnection([
+            ([('ROW_ID',), ('CUST_NUM_PRCA',), ('INGESTION_RUN_ID',), ('EXTRACTED_AT',)],
+             [('request-1', '12345', 'run-new', '2026-10-28 12:00:00')]),
+            ([('ROW_ID',), ('ITEM_E1_NUM',), ('REQ_UOM',), ('REQ_PRICE',), ('INGESTION_RUN_ID',)],
+             [('request-1', '654321', 'EA', '10.00', 'run-new')]),
+        ])
+
+        headers, lines = read_etl(connection, 'DB', 'PRC', '2026-10-01', '2026-11-01',
+                                  table_set='smartsheet-intake-test')
+
+        header_sql, header_params = connection.reader.calls[0]
+        line_sql, line_params = connection.reader.calls[1]
+        self.assertIn('QUALIFY ROW_NUMBER() OVER (PARTITION BY ROW_ID', header_sql)
+        self.assertIn('ORDER BY EXTRACTED_AT DESC, INGESTION_RUN_ID DESC', header_sql)
+        self.assertEqual(headers[0]['INGESTION_RUN_ID'], 'run-new')
+        self.assertIn('ROW_ID = %s AND INGESTION_RUN_ID = %s', line_sql)
+        self.assertEqual(line_params, ('request-1', 'run-new'))
+        self.assertEqual(lines[0]['INGESTION_RUN_ID'], 'run-new')
 
     def test_reader_filters_specific_request_ids_with_parameters(self) -> None:
         connection = FakeConnection()
