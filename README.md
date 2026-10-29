@@ -380,6 +380,16 @@ The current review package is advisory and does not move Smartsheet requests,
 mark them complete, or write a final approval. Automated tier/contract updates
 and production loads are future scope, not part of this phase.
 
+The next step for decision reporting is the sandbox-only completed-request
+snapshot in the ETL package. It uses `Completed = true` as the trigger and emits
+one final decision row per source line: `APPROVED`, `REJECTED`, or
+`NOT_EVALUATED` with a reason. Pending requests remain visible at header level.
+Each decision row preserves the requested price/UOM, sell-UOM price, assigned
+tier, Tapestry cost, completion timestamp, and source/reference hashes. See
+[`ETL/README.md`](ETL/README.md#completed-decision-snapshot). This snapshot is
+append-only in the test schema; it does not automate tier changes, email, or
+production loading.
+
 ### Calculation Basis
 
 - Tapestry costs use item `SELL_UOM`, as confirmed. Missing/mismatched requested

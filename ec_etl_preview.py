@@ -41,6 +41,7 @@ def read_etl(connection, database: str, schema: str, since: str, until: str,
     if request_ids is not None and any(not str(request_id).strip() for request_id in request_ids):
         raise ValueError('Request IDs must be nonempty strings')
     header_table, line_table = TABLE_SETS[table_set]
+    latest_intake_snapshot = table_set == 'smartsheet-intake-test'
     prefix = f'{identifier(database)}.{identifier(schema)}'
     header_sql = (
         f'SELECT * FROM {prefix}.{header_table} '
@@ -56,6 +57,9 @@ def read_etl(connection, database: str, schema: str, since: str, until: str,
         placeholders = ', '.join(['%s'] * len(request_ids))
         header_sql += f'AND ROW_ID IN ({placeholders}) '
         parameters.extend(request_ids)
+    if latest_intake_snapshot:
+        header_sql += ('QUALIFY ROW_NUMBER() OVER (PARTITION BY ROW_ID '
+                       'ORDER BY EXTRACTED_AT DESC, INGESTION_RUN_ID DESC) = 1 ')
     header_sql += 'ORDER BY TRY_TO_TIMESTAMP_NTZ(CREATED_DT), ROW_ID LIMIT %s'
     parameters.append(limit)
     cursor = connection.cursor()
@@ -68,12 +72,24 @@ def read_etl(connection, database: str, schema: str, since: str, until: str,
                               if key.lower() == 'row_id' and value is not None and str(value).strip()})
         if not request_ids:
             return headers, []
-        placeholders = ', '.join(['%s'] * len(request_ids))
-        cursor.execute(
-            f'SELECT * FROM {prefix}.{line_table} '
-            f'WHERE ROW_ID IN ({placeholders}) ORDER BY ROW_ID, ITEM_E1_NUM, REQ_UOM, REQ_PRICE',
-            tuple(request_ids),
-        )
+        if latest_intake_snapshot:
+            header_by_id = {str(next(value for key, value in row.items() if key.lower() == 'row_id')):
+                            {key.lower(): value for key, value in row.items()} for row in headers}
+            if any(not header_by_id[request_id].get('ingestion_run_id') for request_id in request_ids):
+                raise ValueError('Smartsheet intake header is missing INGESTION_RUN_ID')
+            pair_filters = ' OR '.join('(ROW_ID = %s AND INGESTION_RUN_ID = %s)'
+                                       for _ in request_ids)
+            parameters = tuple(value for request_id in request_ids
+                               for value in (request_id, header_by_id[request_id]['ingestion_run_id']))
+            line_sql = (f'SELECT * FROM {prefix}.{line_table} WHERE ({pair_filters}) '
+                        'ORDER BY ROW_ID, ITEM_E1_NUM, REQ_UOM, REQ_PRICE')
+        else:
+            placeholders = ', '.join(['%s'] * len(request_ids))
+            parameters = tuple(request_ids)
+            line_sql = (f'SELECT * FROM {prefix}.{line_table} '
+                        f'WHERE ROW_ID IN ({placeholders}) '
+                        'ORDER BY ROW_ID, ITEM_E1_NUM, REQ_UOM, REQ_PRICE')
+        cursor.execute(line_sql, parameters)
         columns = [column[0] for column in cursor.description]
         lines = [dict(zip(columns, row)) for row in cursor.fetchall()]
         return headers, lines
